@@ -4,9 +4,12 @@ import { hasActiveSession, initAuthSession } from '../composables/useAuthSession
 import AppLayout from '../layouts/AppLayout.vue'
 import AuthLayout from '../layouts/AuthLayout.vue'
 import AgenticPage from '../pages/app/AgenticPage.vue'
+import AccountEmailPage from '../pages/app/AccountEmailPage.vue'
+import AccountPasswordPage from '../pages/app/AccountPasswordPage.vue'
 import ForecastPage from '../pages/app/ForecastPage.vue'
 import MarketPage from '../pages/app/MarketPage.vue'
 import OverviewPage from '../pages/app/OverviewPage.vue'
+import ProfilePage from '../pages/app/ProfilePage.vue'
 import TradingPage from '../pages/app/TradingPage.vue'
 import AuthPage from '../pages/auth/AuthPage.vue'
 
@@ -15,7 +18,7 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: () => (hasActiveSession() ? '/app/overview' : '/auth/login'),
+      redirect: '/app/overview',
     },
     {
       path: '/auth',
@@ -65,17 +68,29 @@ const router = createRouter({
           path: 'agentic',
           component: AgenticPage,
         },
+        {
+          path: 'profile',
+          component: ProfilePage,
+        },
+        {
+          path: 'account/email',
+          component: AccountEmailPage,
+        },
+        {
+          path: 'account/password',
+          component: AccountPasswordPage,
+        },
       ],
     },
     {
       path: '/:pathMatch(.*)*',
-      redirect: () => (hasActiveSession() ? '/app/overview' : '/auth/login'),
+      redirect: '/app/overview',
     },
   ],
 })
 
-router.beforeEach((to) => {
-  initAuthSession()
+router.beforeEach(async (to) => {
+  await initAuthSession()
   const authenticated = hasActiveSession()
 
   if (to.meta.requiresAuth && !authenticated) {

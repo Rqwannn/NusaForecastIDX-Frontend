@@ -1,72 +1,65 @@
 import { computed, ref } from 'vue'
 
 import { backendApi } from '../services/backendApi'
-import { clearAuthToken, getAuthToken, setAuthToken } from '../services/httpClient'
-
-const SESSION_STORAGE_KEY = 'idx30_auth_session'
+import { clearAuthToken } from '../services/httpClient'
 
 const session = ref(null)
 const initialized = ref(false)
+let initPromise = null
 
 const normalizeSession = (payload) => {
-  if (!payload?.token?.access_token || !payload?.user) return null
+  if (!payload?.user) return null
   return {
     user: payload.user,
-    token: payload.token,
+    session: payload.session || null,
   }
 }
 
 const persistSession = (payload) => {
   const normalized = normalizeSession(payload)
-  if (!normalized) {
-    clearSession()
-    return null
-  }
-
   session.value = normalized
-  setAuthToken(normalized.token.access_token)
-
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(normalized))
-  }
-
   return normalized
 }
 
-export const initAuthSession = () => {
-  if (initialized.value) return
-  initialized.value = true
-
-  if (typeof window === 'undefined') return
-
-  const raw = window.localStorage.getItem(SESSION_STORAGE_KEY)
-  if (!raw) {
-    if (!getAuthToken()) clearAuthToken()
-    return
+export const initAuthSession = async ({ force = false } = {}) => {
+  if (force) {
+    initialized.value = false
   }
 
-  try {
-    const parsed = JSON.parse(raw)
-    const normalized = normalizeSession(parsed)
-    if (!normalized) {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY)
-      clearAuthToken()
-      return
+  if (initialized.value && !force) return session.value
+  if (initPromise) return initPromise
+
+  // Drop any legacy bearer token stored by older frontend versions.
+  clearAuthToken()
+
+  initPromise = (async () => {
+    try {
+      const payload = await backendApi.getSession()
+      session.value = normalizeSession(payload)
+    } catch {
+      session.value = null
+    } finally {
+      initialized.value = true
+      initPromise = null
     }
 
-    session.value = normalized
-    setAuthToken(normalized.token.access_token)
-  } catch {
-    window.localStorage.removeItem(SESSION_STORAGE_KEY)
-    clearAuthToken()
-  }
+    return session.value
+  })()
+
+  return initPromise
 }
 
 export const clearSession = () => {
   session.value = null
+  initialized.value = true
   clearAuthToken()
-  if (typeof window !== 'undefined') {
-    window.localStorage.removeItem(SESSION_STORAGE_KEY)
+}
+
+export const logoutSession = async () => {
+  try {
+    await backendApi.logout()
+  } finally {
+    clearSession()
   }
 }
 
@@ -80,21 +73,27 @@ export const registerSession = async (registerPayload) => {
   return persistSession(payload)
 }
 
-export const hasActiveSession = () => Boolean(session.value?.token?.access_token)
+export const refreshSession = async () => {
+  return initAuthSession({ force: true })
+}
+
+export const hasActiveSession = () => Boolean(session.value?.user?.uid)
 
 export const useAuthSession = () => {
   const isAuthenticated = computed(() => hasActiveSession())
   const user = computed(() => session.value?.user || null)
-  const token = computed(() => session.value?.token || null)
+  const authSession = computed(() => session.value?.session || null)
 
   return {
     session,
     user,
-    token,
+    authSession,
     isAuthenticated,
     loginSession,
     registerSession,
+    logoutSession,
     clearSession,
     initAuthSession,
+    refreshSession,
   }
 }

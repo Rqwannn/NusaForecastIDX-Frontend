@@ -11,6 +11,26 @@ export const backendApi = {
       method: 'POST',
       body: { credential, password },
     }),
+  getSession: () => apiRequest('/api/v1/auth/session'),
+  logout: () =>
+    apiRequest('/api/v1/auth/logout', {
+      method: 'POST',
+    }),
+  updateProfile: (payload) =>
+    apiRequest('/api/v1/auth/profile', {
+      method: 'PATCH',
+      body: payload,
+    }),
+  updateEmail: (payload) =>
+    apiRequest('/api/v1/auth/email', {
+      method: 'PATCH',
+      body: payload,
+    }),
+  updatePassword: (payload) =>
+    apiRequest('/api/v1/auth/password', {
+      method: 'PATCH',
+      body: payload,
+    }),
 
   getRoot: () => apiRequest('/'),
   getHealth: () => apiRequest('/health'),
@@ -31,6 +51,10 @@ export const backendApi = {
 
   getEvaluationSummary: () => apiRequest('/api/v1/evaluation/summary'),
   getBacktestSummary: () => apiRequest('/api/v1/backtest/summary'),
+  getDashboardOverview: (ticker, horizon = 5) =>
+    apiRequest('/api/v1/dashboard/overview', {
+      query: { ticker, horizon },
+    }),
 
   placePaperOrder: ({ ticker, side, qty }) =>
     apiRequest('/api/v1/paper/orders', {

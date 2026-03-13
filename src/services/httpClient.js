@@ -64,6 +64,7 @@ export const apiRequest = async (path, options = {}) => {
     body,
     headers = {},
     signal,
+    credentials = 'include',
   } = options
 
   const requestHeaders = {
@@ -74,6 +75,7 @@ export const apiRequest = async (path, options = {}) => {
 
   const response = await fetch(buildUrl(path, query), {
     method,
+    credentials,
     headers: requestHeaders,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
