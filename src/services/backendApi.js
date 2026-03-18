@@ -38,12 +38,15 @@ export const backendApi = {
   getDataStatus: () => apiRequest('/api/v1/system/data-status'),
 
   getMarketOverview: () => apiRequest('/api/v1/market/overview'),
-  getStockQuote: (ticker) => apiRequest(`/api/v1/stocks/${ticker}/quote`),
-  getStockOhlcv: (ticker, { interval = '1d', range = '30d' } = {}) =>
-    apiRequest(`/api/v1/stocks/${ticker}/ohlcv`, { query: { interval, range } }),
+  getStockQuote: (ticker, { fresh = false } = {}) =>
+    apiRequest(`/api/v1/stocks/${ticker}/quote`, { query: { fresh } }),
+  getStockOhlcv: (ticker, { interval = '1d', range = '30d', fresh = false } = {}) =>
+    apiRequest(`/api/v1/stocks/${ticker}/ohlcv`, { query: { interval, range, fresh } }),
 
   getForecast: (ticker, horizon = 1) =>
     apiRequest(`/api/v1/forecast/${ticker}`, { query: { horizon } }),
+  getForecastRuntimeCatalog: () =>
+    apiRequest('/api/v1/forecast/runtime-catalog'),
   getExplanation: (ticker, horizon = 1) =>
     apiRequest(`/api/v1/explanations/${ticker}`, { query: { horizon } }),
   getForecastXai: (ticker, horizon = 1) =>
@@ -51,9 +54,9 @@ export const backendApi = {
 
   getEvaluationSummary: () => apiRequest('/api/v1/evaluation/summary'),
   getBacktestSummary: () => apiRequest('/api/v1/backtest/summary'),
-  getDashboardOverview: (ticker, horizon = 5) =>
+  getDashboardOverview: (ticker, horizon = 5, chartRange = '1mo') =>
     apiRequest('/api/v1/dashboard/overview', {
-      query: { ticker, horizon },
+      query: { ticker, horizon, chart_range: chartRange },
     }),
 
   placePaperOrder: ({ ticker, side, qty }) =>
@@ -69,6 +72,11 @@ export const backendApi = {
     apiRequest('/api/v1/agentic/react/run', {
       method: 'POST',
       body: { user_goal, ticker, horizon },
+    }),
+  runInfoCenter: ({ question, ticker, horizon, context }) =>
+    apiRequest('/api/v1/agentic/info-center/run', {
+      method: 'POST',
+      body: { question, ticker, horizon, ...(context ? { context } : {}) },
     }),
 
   getWellKnownAgentCard: () => apiRequest('/.well-known/agent-card.json'),
