@@ -183,6 +183,22 @@
   border-color: rgba(45, 145, 109, 0.28);
 }
 
+.workspace-shell[data-theme='light'] .overview-page .overview-metric-card.is-accent {
+  background: linear-gradient(145deg, rgba(31, 120, 90, 0.95), rgba(49, 153, 116, 0.9));
+  border-color: rgba(39, 123, 94, 0.38);
+  box-shadow: 0 14px 28px rgba(44, 124, 95, 0.2);
+}
+
+.workspace-shell[data-theme='light'] .overview-page .overview-metric-card.is-accent h2,
+.workspace-shell[data-theme='light'] .overview-page .overview-metric-card.is-accent span,
+.workspace-shell[data-theme='light'] .overview-page .overview-metric-card.is-accent small {
+  color: #e9f7f1;
+}
+
+.workspace-shell[data-theme='light'] .overview-page .overview-metric-card.is-accent p {
+  color: #f5fffb;
+}
+
 .overview-metric-card p {
   margin: 0;
   color: var(--ws-text-soft);

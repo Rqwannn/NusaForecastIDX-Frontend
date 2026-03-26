@@ -30,6 +30,13 @@ const mainNavigationItems = [
     description: 'Pantau breadth IDX30, quote, dan konteks pasar terkini.',
   },
   {
+    label: 'Portofolio',
+    to: '/app/portfolio',
+    icon: 'ri-wallet-3-line',
+    eyebrow: 'Portfolio monitor',
+    description: 'Ringkasan nilai, posisi aktif, transaksi, dan exposure risiko per ticker.',
+  },
+  {
     label: 'Forecast',
     to: '/app/forecast',
     icon: 'ri-funds-box-line',
@@ -44,11 +51,11 @@ const mainNavigationItems = [
     description: 'Kelola simulasi order, posisi, dan disiplin eksekusi strategi.',
   },
   {
-    label: 'Agentic',
+    label: 'AI Analyst',
     to: '/app/agentic',
     icon: 'ri-robot-2-line',
-    eyebrow: 'Agentic orchestration',
-    description: 'Pantau respons ReAct, reasoning trace, dan ringkasan multi-agent.',
+    eyebrow: 'Smart Automation',
+    description: 'Analisis berita pasar, pengambilan keputusan cerdas, dan mitigasi risiko otomatis.',
   },
 ]
 

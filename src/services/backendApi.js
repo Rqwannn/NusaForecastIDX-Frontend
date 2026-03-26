@@ -79,6 +79,53 @@ export const backendApi = {
       body: { question, ticker, horizon, ...(context ? { context } : {}) },
     }),
 
+  runResearchIngest: ({ tickers } = {}) =>
+    apiRequest('/api/v1/research/ingest/run', {
+      method: 'POST',
+      body: { ...(Array.isArray(tickers) && tickers.length ? { tickers } : {}) },
+    }),
+  getResearchIngestStatus: () => apiRequest('/api/v1/research/ingest/status'),
+  getResearchIngestFeed: ({ ticker, snapshotLimit = 20 } = {}) =>
+    apiRequest('/api/v1/research/ingest/feed', {
+      query: {
+        ...(ticker ? { ticker } : {}),
+        snapshot_limit: snapshotLimit,
+      },
+    }),
+
+  runResearchCommittee: ({ ticker, horizon, mode }) =>
+    apiRequest('/api/v1/research/committee/run', {
+      method: 'POST',
+      body: { ticker, horizon, ...(mode ? { mode } : {}) },
+    }),
+
+  getResearchRiskPolicy: () => apiRequest('/api/v1/research/risk/policy'),
+  patchResearchRiskPolicy: (payload) =>
+    apiRequest('/api/v1/research/risk/policy', {
+      method: 'PATCH',
+      body: payload,
+    }),
+  getResearchRiskEvents: (limit = 100) =>
+    apiRequest('/api/v1/research/risk/events', {
+      query: { limit },
+    }),
+
+  generateResearchReports: ({ ticker, horizon, force_regenerate = true } = {}) =>
+    apiRequest('/api/v1/research/reports/generate', {
+      method: 'POST',
+      body: {
+        ...(ticker ? { ticker } : {}),
+        ...(horizon ? { horizon } : {}),
+        force_regenerate,
+      },
+    }),
+  readReportFile: (fileKey) =>
+    apiRequest('/api/v1/research/reports/read', {
+      query: { file_key: fileKey },
+    }),
+  getReportDownloadUrl: (fileKey) =>
+    `/api/v1/research/reports/download?file_key=${encodeURIComponent(fileKey)}`,
+
   getWellKnownAgentCard: () => apiRequest('/.well-known/agent-card.json'),
   getA2aAgentCard: () => apiRequest('/api/v1/agentic/a2a/agent-card'),
   callA2aRpc: (body) =>

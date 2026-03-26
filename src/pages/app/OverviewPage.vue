@@ -3,8 +3,11 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthSession } from '../../composables/useAuthSession'
+import { usePageContext } from '../../composables/usePageContext'
 import { backendApi } from '../../services/backendApi'
 import '../../styles/pages/overview-page.css'
+
+const { setPageContext, clearPageContext } = usePageContext()
 
 const route = useRoute()
 const router = useRouter()
@@ -280,11 +283,27 @@ watch(chartLabels, (labels) => {
   selectedPointIndex.value = Math.max((labels || []).length - 1, 0)
 })
 
+watch(() => [overview.value, alertContent.value, aiBrief.value], () => {
+  setPageContext({
+    pageName: 'Executive Overview',
+    overviewDashboard: {
+      ticker: primaryTicker.value,
+      horizon: primaryHorizon.value,
+      outlook: outlookLabel.value,
+      summaryCards: summaryCards.value,
+      alertDecision: alertContent.value,
+      aiBrief: aiBrief.value,
+      nextActions: nextActions.value
+    }
+  })
+}, { deep: true })
+
 onMounted(() => {
   void loadOverview()
 })
 
 onBeforeUnmount(() => {
+  clearPageContext()
   stopAutoRefresh()
 })
 </script>

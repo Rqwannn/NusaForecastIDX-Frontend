@@ -2,8 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { usePageContext } from '../../composables/usePageContext'
 import { backendApi } from '../../services/backendApi'
 import '../../styles/pages/market-page.css'
+
+const { setPageContext, clearPageContext } = usePageContext()
 
 const route = useRoute()
 const router = useRouter()
@@ -57,6 +60,11 @@ const dragStartX = ref(0)
 const dragStartWindowStart = ref(0)
 const isChartFullscreen = ref(false)
 const isBookmarked = ref(false)
+const isScrollbarVisible = ref(false)
+let scrollbarHideTimer = null
+let isScrollbarDragging = false
+let scrollbarDragStartX = 0
+let scrollbarDragStartWindowStart = 0
 const isLiveMode = ref(String(route.query.live || 'on').toLowerCase() !== 'off')
 const isLiveRefreshing = ref(false)
 const liveError = ref('')
@@ -73,6 +81,9 @@ const forecast = ref(null)
 const explanation = ref(null)
 const evaluation = ref(null)
 const forecastCatalog = ref(null)
+const ingestFeed = ref(null)
+const ingestFeedLoading = ref(false)
+const ingestFeedError = ref('')
 const smartAnalysisLoading = ref(false)
 const smartAnalysisError = ref('')
 const smartAnalysisRaw = ref('')
@@ -454,6 +465,18 @@ const selectedPoint = computed(() => activePoints.value[clampedPointIndex.value]
 
 const toPolyline = (points) => points.map((point) => `${point.x},${point.y}`).join(' ')
 const linePath = computed(() => toPolyline(linePoints.value))
+const lineAreaPath = computed(() => {
+  const pts = linePoints.value
+  if (pts.length < 2) return ''
+  const first = pts[0]
+  const last = pts[pts.length - 1]
+  return [
+    `M ${first.x},${chartBottom}`,
+    ...pts.map((p) => `L ${p.x},${p.y}`),
+    `L ${last.x},${chartBottom}`,
+    'Z',
+  ].join(' ')
+})
 
 const yTicks = computed(() => {
   const bounds = activeBounds.value
@@ -471,18 +494,52 @@ const yTicks = computed(() => {
 
 const xTicks = computed(() => {
   const labels = chartLabels.value
-  const count = labels.length
+  const points = activePoints.value
+  const count = Math.min(labels.length, points.length)
   if (!count) return []
-  const target = 8
-  const step = Math.max(1, Math.floor(count / target))
-  const ticks = []
+
+  const intervalValue = String(selectedInterval.value || '').toLowerCase()
+  const isIntraday = ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h'].includes(intervalValue)
+  const targetTicks = isIntraday ? 6 : 8
+  const minGapPx = isIntraday ? 92 : 74
+  const step = Math.max(1, Math.ceil(count / targetTicks))
+
+  const candidateIndexes = []
   for (let idx = 0; idx < count; idx += step) {
-    ticks.push({ idx, label: labels[idx], x: activePoints.value[idx]?.x || padLeft })
+    candidateIndexes.push(idx)
   }
+
   const lastIdx = count - 1
-  if (!ticks.find((item) => item.idx === lastIdx)) {
-    ticks.push({ idx: lastIdx, label: labels[lastIdx], x: activePoints.value[lastIdx]?.x || chartRight })
+  if (!candidateIndexes.includes(lastIdx)) candidateIndexes.push(lastIdx)
+
+  const ticks = []
+  let lastAcceptedX = Number.NEGATIVE_INFINITY
+  for (const idx of candidateIndexes) {
+    const x = points[idx]?.x || padLeft
+    if (x - lastAcceptedX < minGapPx) continue
+    ticks.push({ idx, label: labels[idx], x })
+    lastAcceptedX = x
   }
+
+  if (!ticks.length) {
+    return [{ idx: lastIdx, label: labels[lastIdx], x: points[lastIdx]?.x || chartRight }]
+  }
+
+  const lastTick = ticks[ticks.length - 1]
+  const lastX = points[lastIdx]?.x || chartRight
+  if (lastTick.idx !== lastIdx) {
+    if (lastX - lastTick.x < minGapPx) {
+      ticks[ticks.length - 1] = { idx: lastIdx, label: labels[lastIdx], x: lastX }
+    } else {
+      ticks.push({ idx: lastIdx, label: labels[lastIdx], x: lastX })
+    }
+  }
+
+  const firstX = points[0]?.x || padLeft
+  if (ticks[0]?.idx !== 0 && ticks[0]?.x - firstX >= minGapPx) {
+    ticks.unshift({ idx: 0, label: labels[0], x: firstX })
+  }
+
   return ticks
 })
 
@@ -536,6 +593,39 @@ const estSupply = computed(() => {
 
 const topGainers = computed(() => marketOverview.value?.top_gainers || [])
 const topLosers = computed(() => marketOverview.value?.top_losers || [])
+const ingestNewsItems = computed(() => {
+  const items = Array.isArray(ingestFeed.value?.news_items) ? ingestFeed.value.news_items : []
+  return items.slice(0, 6)
+})
+const ingestSentimentItems = computed(() => {
+  const items = Array.isArray(ingestFeed.value?.sentiment_snapshots) ? ingestFeed.value.sentiment_snapshots : []
+  return [...items]
+    .sort((left, right) => Math.abs(Number(right.sentiment_score || 0)) - Math.abs(Number(left.sentiment_score || 0)))
+    .slice(0, 6)
+})
+const ingestFeedCounts = computed(() => ingestFeed.value?.counts || {})
+const ingestFeedUpdatedLabel = computed(() => {
+  if (!ingestNewsItems.value.length && !ingestSentimentItems.value.length) return '-'
+  const latestNews = ingestNewsItems.value[0]?.published_at
+  const latestSentiment = ingestSentimentItems.value[0]?.snapshot_at
+  const source = latestNews || latestSentiment
+  if (!source) return '-'
+  try {
+    return new Intl.DateTimeFormat('id-ID', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(source))
+  } catch {
+    return '-'
+  }
+})
+const ingestFeedMarketTone = computed(() => {
+  const score = Number(ingestFeedCounts.value.sentiment_snapshots || 0)
+  if (score > 0) return 'Market digest aktif'
+  return 'Menunggu ingest terbaru'
+})
 const xaiDrivers = computed(() => {
   const local = Array.isArray(explanation.value?.local_features) ? explanation.value.local_features.slice(0, 4) : []
   if (local.length) return local
@@ -552,6 +642,27 @@ const xaiImpactClass = (direction) => {
   if (['positive', 'bullish', 'up'].includes(value)) return 'is-up'
   if (['negative', 'bearish', 'down'].includes(value)) return 'is-down'
   return 'is-neutral'
+}
+
+const sentimentClass = (value) => {
+  const score = Number(value || 0)
+  if (score > 0.08) return 'is-up'
+  if (score < -0.08) return 'is-down'
+  return 'is-neutral'
+}
+
+const formatIngestDate = (value) => {
+  if (!value) return '-'
+  try {
+    return new Intl.DateTimeFormat('id-ID', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(value))
+  } catch {
+    return '-'
+  }
 }
 
 const fallbackModelFeatures = [
@@ -581,6 +692,7 @@ const analysisFieldGroups = computed(() => {
   const modelOutput = [
     'selected_model', 'predicted_return', 'final_signal', 'confidence_score',
     'rmse', 'mae', 'accuracy', 'sharpe_ratio', 'cumulative_return',
+    'roi_pct', 'rri', 'volatility_pct',
   ]
   const xaiFields = [
     'reason_summary', 'local_features', 'global_features',
@@ -677,6 +789,204 @@ const chartWindowStats = computed(() => {
   }
 })
 
+const performanceSnapshot = computed(() => {
+  const window = displayPoints.value.slice(-Math.min(40, displayPoints.value.length))
+  if (window.length < 2) {
+    return {
+      roiPct: 0,
+      rri: 0,
+      volatilityPct: 0,
+      samplePoints: window.length,
+      periodStartTs: window[0]?.timestamp || '',
+      periodEndTs: window[window.length - 1]?.timestamp || '',
+    }
+  }
+
+  const closes = window.map((point) => Number(point.close || 0))
+  const firstClose = closes[0]
+  const lastClose = closes[closes.length - 1]
+  const roiPct = firstClose > 0 ? ((lastClose - firstClose) / firstClose) * 100 : 0
+
+  const returns = []
+  for (let idx = 1; idx < closes.length; idx += 1) {
+    const prev = closes[idx - 1]
+    if (prev <= 0) continue
+    returns.push((closes[idx] - prev) / prev)
+  }
+
+  const meanReturn = returns.length
+    ? returns.reduce((sum, value) => sum + value, 0) / returns.length
+    : 0
+  const variance = returns.length
+    ? returns.reduce((sum, value) => sum + (value - meanReturn) ** 2, 0) / returns.length
+    : 0
+  const volatilityPct = Math.sqrt(Math.max(variance, 0)) * 100
+  const rri = volatilityPct > 0 ? roiPct / volatilityPct : 0
+
+  return {
+    roiPct,
+    rri,
+    volatilityPct,
+    samplePoints: window.length,
+    periodStartTs: window[0]?.timestamp || '',
+    periodEndTs: window[window.length - 1]?.timestamp || '',
+  }
+})
+
+const performanceMetricRows = computed(() => {
+  const roi = Number(performanceSnapshot.value.roiPct || 0)
+  const rri = Number(performanceSnapshot.value.rri || 0)
+  const volatility = Number(performanceSnapshot.value.volatilityPct || 0)
+  const formatSigned = (value, digits = 2, suffix = '') => {
+    const sign = value > 0 ? '+' : ''
+    return `${sign}${value.toFixed(digits)}${suffix}`
+  }
+  const tone = (value) => (value > 0 ? 'is-up' : value < 0 ? 'is-down' : 'is-neutral')
+
+  return [
+    { code: 'ROI', label: 'Return on Investment', value: formatSigned(roi, 2, '%'), tone: tone(roi) },
+    { code: 'RRI', label: 'Risk-Return Index', value: formatSigned(rri, 2), tone: tone(rri) },
+    { code: 'V', label: 'Volatility (%)', value: formatSigned(volatility, 2, '%'), tone: tone(-volatility) },
+  ]
+})
+
+const performanceMetricDate = computed(() => {
+  const source = performanceSnapshot.value.periodEndTs || analysisFocusPoint.value?.timestamp || ''
+  if (!source) return '-'
+  return formatTimestamp(source, false)
+})
+
+const performanceSparkGeometry = computed(() => {
+  const window = displayPoints.value.slice(-Math.min(28, displayPoints.value.length))
+  if (window.length < 2) {
+    return {
+      polyline: '',
+      areaPath: '',
+      lastPoint: null,
+      baseY: 98,
+      gridY: [],
+    }
+  }
+
+  const values = window.map((point) => Number(point.close || 0))
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const spread = max - min || 1
+  const width = 300
+  const height = 110
+  const padX = 6
+  const padY = 10
+  const baseY = height - padY
+  const innerWidth = width - padX * 2
+  const innerHeight = height - padY * 2
+
+  const coords = values.map((value, idx) => {
+    const x = padX + (idx / Math.max(values.length - 1, 1)) * innerWidth
+    const y = padY + ((max - value) / spread) * innerHeight
+    return { x, y, value }
+  })
+
+  const polyline = coords.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')
+  const areaPath = [
+    `M ${coords[0].x.toFixed(2)} ${baseY.toFixed(2)}`,
+    ...coords.map((point) => `L ${point.x.toFixed(2)} ${point.y.toFixed(2)}`),
+    `L ${coords[coords.length - 1].x.toFixed(2)} ${baseY.toFixed(2)}`,
+    'Z',
+  ].join(' ')
+
+  const gridY = [0.2, 0.5, 0.8].map((ratio) => (padY + innerHeight * ratio).toFixed(2))
+  return {
+    polyline,
+    areaPath,
+    lastPoint: coords[coords.length - 1],
+    baseY,
+    gridY,
+  }
+})
+
+const performanceSparkLastLabel = computed(() => {
+  const point = displayPoints.value[displayPoints.value.length - 1]
+  if (!point) return '-'
+  return formatSeriesValue(toSelectedCurrency(point.close))
+})
+
+const modelSummaryRows = computed(() => {
+  const predictedReturnPct = Number(forecastData.value.predicted_return || 0) * 100
+  const confidencePct = Number(forecastData.value.confidence_score || 0) * 100
+  const accuracyPct = Number(selectedMetric.value?.accuracy || 0) * 100
+  const sharpe = Number(selectedMetric.value?.sharpe_ratio || 0)
+  const rmse = Number(selectedMetric.value?.rmse || 0)
+  const mae = Number(selectedMetric.value?.mae || 0)
+
+  const toneClass = (value, invert = false) => {
+    if (value === 0) return 'is-neutral'
+    if (invert) return value < 0 ? 'is-up' : 'is-down'
+    return value > 0 ? 'is-up' : 'is-down'
+  }
+
+  return [
+    {
+      label: 'Prediksi return',
+      value: `${predictedReturnPct > 0 ? '+' : ''}${predictedReturnPct.toFixed(2)}%`,
+      tone: toneClass(predictedReturnPct),
+    },
+    {
+      label: 'Confidence',
+      value: `${confidencePct.toFixed(1)}%`,
+      tone: confidencePct >= 60 ? 'is-up' : confidencePct >= 40 ? 'is-neutral' : 'is-down',
+    },
+    {
+      label: 'Akurasi arah',
+      value: `${accuracyPct.toFixed(1)}%`,
+      tone: accuracyPct >= 52 ? 'is-up' : accuracyPct >= 48 ? 'is-neutral' : 'is-down',
+    },
+    {
+      label: 'RMSE',
+      value: rmse.toFixed(4),
+      tone: toneClass(rmse, true),
+    },
+    {
+      label: 'MAE',
+      value: mae.toFixed(4),
+      tone: toneClass(mae, true),
+    },
+    {
+      label: 'Sharpe',
+      value: `${sharpe > 0 ? '+' : ''}${sharpe.toFixed(2)}`,
+      tone: toneClass(sharpe),
+    },
+  ]
+})
+
+const modelModeLabel = computed(() => {
+  const mode = String(forecastData.value.mode || '').toLowerCase()
+  if (mode === 'hybrid') return 'Hybrid'
+  if (mode === 'global') return 'Global'
+  if (mode === 'per_ticker') return 'Per ticker'
+  return 'Mode default'
+})
+
+const modelSignalLabel = computed(() => {
+  const signal = String(forecastData.value.final_signal || 'hold').toLowerCase()
+  if (signal === 'buy') return 'Bias naik'
+  if (signal === 'sell') return 'Bias turun'
+  return 'Bias netral'
+})
+
+const performanceTrendLabel = computed(() => {
+  const roi = Number(performanceSnapshot.value.roiPct || 0)
+  if (roi > 0.5) return 'Momentum menguat'
+  if (roi < -0.5) return 'Momentum melemah'
+  return 'Pergerakan konsolidasi'
+})
+
+const performanceTrendTone = computed(() => {
+  const roi = Number(performanceSnapshot.value.roiPct || 0)
+  if (roi > 0) return 'is-up'
+  if (roi < 0) return 'is-down'
+  return 'is-neutral'
+})
+
 const smartAnalysisClientContext = computed(() => {
   const focus = analysisFocusPoint.value
   const modelMetric = selectedMetric.value || {}
@@ -723,6 +1033,14 @@ const smartAnalysisClientContext = computed(() => {
       sharpe_ratio: Number(modelMetric.sharpe_ratio || 0),
       cumulative_return_pct: Number(modelMetric.cumulative_return || 0) * 100,
     },
+    performance_snapshot: {
+      roi_pct: Number(performanceSnapshot.value.roiPct || 0),
+      rri: Number(performanceSnapshot.value.rri || 0),
+      volatility_pct: Number(performanceSnapshot.value.volatilityPct || 0),
+      sample_points: Number(performanceSnapshot.value.samplePoints || 0),
+      period_start_ts: performanceSnapshot.value.periodStartTs,
+      period_end_ts: performanceSnapshot.value.periodEndTs,
+    },
   }
 })
 
@@ -736,7 +1054,7 @@ const smartAnalysisPrompt = computed(() => {
     `Lakukan analisis cerdas untuk ${selectedTicker.value} dengan horizon ${selectedHorizon.value} hari. ` +
     `Konteks saat ini: sinyal ${signal}, confidence ${confidence}%, model ${modelName}, range ${timeframe}, granularitas ${granularity}. ` +
     'Berikan brief keputusan yang bisa langsung dipakai analis: prolog singkat, detail pendukung, dan langkah lanjutan yang konkret ' +
-    '(prioritas skenario, trigger harga, serta checklist proteksi risiko).'
+    '(prioritas skenario, trigger harga, checklist proteksi risiko, serta pembacaan ROI/RRI/volatility).'
   )
 })
 
@@ -987,17 +1305,126 @@ const zoomOut = (anchorRatio = 0.5) => {
   changeZoom(zoomLevel.value - 1, anchorRatio)
 }
 
+const showScrollbarBriefly = () => {
+  isScrollbarVisible.value = true
+  if (scrollbarHideTimer) clearTimeout(scrollbarHideTimer)
+  scrollbarHideTimer = setTimeout(() => {
+    if (!isScrollbarDragging) isScrollbarVisible.value = false
+  }, 1200)
+}
+
+const scrollbarThumb = computed(() => {
+  const total = points.value.length
+  const visible = visiblePointCount.value
+  if (!total || visible >= total) return { left: 0, width: 100, show: false }
+  const width = Math.max((visible / total) * 100, 6)
+  const maxStart = Math.max(total - visible, 1)
+  const left = (windowStartClamped.value / maxStart) * (100 - width)
+  return { left, width, show: true }
+})
+
+const onScrollbarPointerDown = (event) => {
+  event.preventDefault()
+  event.stopPropagation()
+  isScrollbarDragging = true
+  scrollbarDragStartX = event.clientX
+  scrollbarDragStartWindowStart = windowStartClamped.value
+  showScrollbarBriefly()
+
+  const onMove = (moveEvent) => {
+    const track = event.currentTarget?.parentElement
+    if (!track) return
+    const rect = track.getBoundingClientRect()
+    const deltaRatio = (moveEvent.clientX - scrollbarDragStartX) / Math.max(rect.width, 1)
+    const total = points.value.length
+    const visible = visiblePointCount.value
+    const maxStart = Math.max(total - visible, 0)
+    windowStart.value = clamp(
+      scrollbarDragStartWindowStart + Math.round(deltaRatio * maxStart),
+      0,
+      maxStart,
+    )
+    selectedPointIndex.value = clamp(selectedPointIndex.value, 0, Math.max(visible - 1, 0))
+  }
+
+  const onUp = () => {
+    isScrollbarDragging = false
+    showScrollbarBriefly()
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+}
+
+const onScrollbarTrackClick = (event) => {
+  const track = event.currentTarget
+  if (!track) return
+  const rect = track.getBoundingClientRect()
+  const clickRatio = (event.clientX - rect.left) / Math.max(rect.width, 1)
+  const total = points.value.length
+  const visible = visiblePointCount.value
+  const maxStart = Math.max(total - visible, 0)
+  const targetCenter = Math.round(clickRatio * total)
+  windowStart.value = clamp(targetCenter - Math.floor(visible / 2), 0, maxStart)
+  selectedPointIndex.value = clamp(selectedPointIndex.value, 0, Math.max(visible - 1, 0))
+  showScrollbarBriefly()
+}
+
+const noop = () => {
+}
+
+let wheelAccumulator = 0
+let wheelCooldownTimer = null
+const WHEEL_ZOOM_THRESHOLD = 80
+const WHEEL_ZOOM_COOLDOWN_MS = 180
+
 const onChartWheel = (event) => {
   if (!displayPoints.value.length) return
   const rect = event.currentTarget?.getBoundingClientRect()
   if (!rect) return
+
+  // Horizontal trackpad swipe → pan the chart immediately
+  const absX = Math.abs(event.deltaX)
+  const absY = Math.abs(event.deltaY)
+  if (absX > absY && absX > 2) {
+    const total = points.value.length
+    const visible = visiblePointCount.value
+    const maxStart = Math.max(total - visible, 0)
+    const panSensitivity = Math.max(1, Math.round(visible * 0.04))
+    const panDelta = event.deltaX > 0 ? panSensitivity : -panSensitivity
+    windowStart.value = clamp(windowStartClamped.value + panDelta, 0, maxStart)
+    selectedPointIndex.value = clamp(selectedPointIndex.value, 0, Math.max(visible - 1, 0))
+    showScrollbarBriefly()
+    return
+  }
+
+  // Vertical scroll → zoom with accumulation
   const x = ((event.clientX - rect.left) / rect.width) * chartWidth
   const ratio = clamp((x - padLeft) / Math.max(chartRight - padLeft, 1), 0, 1)
-  if (event.deltaY < 0) {
+
+  wheelAccumulator += event.deltaY
+
+  if (wheelCooldownTimer) return
+
+  const absAccum = Math.abs(wheelAccumulator)
+  if (absAccum < WHEEL_ZOOM_THRESHOLD) return
+
+  const direction = wheelAccumulator < 0 ? 'in' : 'out'
+  wheelAccumulator = 0
+
+  if (direction === 'in') {
     zoomIn(ratio)
-  } else if (event.deltaY > 0) {
+  } else {
     zoomOut(ratio)
   }
+
+  showScrollbarBriefly()
+
+  wheelCooldownTimer = setTimeout(() => {
+    wheelCooldownTimer = null
+  }, WHEEL_ZOOM_COOLDOWN_MS)
 }
 
 const onChartPointerDown = (event) => {
@@ -1007,6 +1434,7 @@ const onChartPointerDown = (event) => {
   dragStartX.value = event.clientX
   dragStartWindowStart.value = windowStartClamped.value
   event.currentTarget?.setPointerCapture?.(event.pointerId)
+  showScrollbarBriefly()
 }
 
 const onChartPointerDrag = (event) => {
@@ -1021,6 +1449,7 @@ const onChartPointerDrag = (event) => {
     0,
     maxWindowStart.value,
   )
+  showScrollbarBriefly()
 }
 
 const onChartPointerUp = (event) => {
@@ -1053,6 +1482,22 @@ const syncQuery = async () => {
   })
 }
 
+const loadResearchIngestFeed = async (ticker) => {
+  ingestFeedLoading.value = true
+  ingestFeedError.value = ''
+  try {
+    ingestFeed.value = await backendApi.getResearchIngestFeed({
+      ticker,
+      newsLimit: 12,
+      snapshotLimit: 12,
+    })
+  } catch (error) {
+    ingestFeedError.value = error instanceof Error ? error.message : 'Feed riset belum tersedia.'
+  } finally {
+    ingestFeedLoading.value = false
+  }
+}
+
 const loadMarketData = async ({ sync = true } = {}) => {
   isLoading.value = true
   loadError.value = ''
@@ -1080,6 +1525,7 @@ const loadMarketData = async ({ sync = true } = {}) => {
     selectedPointIndex.value = Math.max(activePoints.value.length - 1, 0)
     selectedTicker.value = ticker
     lastLiveUpdateAt.value = new Date().toISOString()
+    await loadResearchIngestFeed(ticker)
     if (sync) await syncQuery()
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'Gagal memuat data market.'
@@ -1113,13 +1559,34 @@ watch(maxZoomLevel, (value) => {
   zoomLevel.value = clamp(zoomLevel.value, 1, value)
 })
 
+watch([quote, forecast, explanation, smartAnalysisRaw, ingestFeed], () => {
+  try {
+    setPageContext({
+      pageName: 'Market Watch',
+      marketWatchState: smartAnalysisClientContext.value,
+      liveNewsContext: ingestNewsItems.value,
+    })
+  } catch {
+    // ignore
+  }
+}, { deep: true })
+
 onMounted(() => {
   restoreSmartAnalysisState()
   void loadMarketData({ sync: false })
 })
 
 onBeforeUnmount(() => {
+  clearPageContext()
   stopLiveAutoRefresh()
+  if (wheelCooldownTimer) {
+    clearTimeout(wheelCooldownTimer)
+    wheelCooldownTimer = null
+  }
+  if (scrollbarHideTimer) {
+    clearTimeout(scrollbarHideTimer)
+    scrollbarHideTimer = null
+  }
 })
 </script>
 
@@ -1321,7 +1788,7 @@ onBeforeUnmount(() => {
 
             <template v-if="selectedChartType === 'candle'">
               <g v-for="(bar, idx) in candlePoints" :key="`bar-${idx}`">
-                <line class="market-candle-wick" :x1="bar.x" :x2="bar.x" :y1="bar.highY" :y2="bar.lowY" />
+                <line :class="['market-candle-wick', bar.isUp ? 'market-candle-wick--up' : 'market-candle-wick--down']" :x1="bar.x" :x2="bar.x" :y1="bar.highY" :y2="bar.lowY" />
                 <rect
                   :x="bar.x - bar.width / 2"
                   :y="Math.min(bar.openY, bar.closeY)"
@@ -1332,6 +1799,13 @@ onBeforeUnmount(() => {
               </g>
             </template>
             <template v-else>
+              <defs>
+                <linearGradient id="mkLineAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="var(--mk-line-stroke)" stop-opacity="0.18" />
+                  <stop offset="100%" stop-color="var(--mk-line-stroke)" stop-opacity="0.01" />
+                </linearGradient>
+              </defs>
+              <path v-if="lineAreaPath" class="market-chart__area" :d="lineAreaPath" />
               <polyline class="market-chart__line" :points="linePath" />
             </template>
 
@@ -1379,6 +1853,17 @@ onBeforeUnmount(() => {
             <p>{{ selectedTooltip.sub }}</p>
             <p v-if="selectedTooltip.extra">{{ selectedTooltip.extra }}</p>
           </div>
+          <div
+            v-if="scrollbarThumb.show"
+            :class="['market-chart-scrollbar', isScrollbarVisible ? 'is-visible' : '']"
+            @click.self="onScrollbarTrackClick"
+          >
+            <div
+              class="market-chart-scrollbar__thumb"
+              :style="{ left: scrollbarThumb.left + '%', width: scrollbarThumb.width + '%' }"
+              @pointerdown="onScrollbarPointerDown"
+            />
+          </div>
         </div>
 
         <div class="market-x-axis">
@@ -1387,15 +1872,80 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="market-lower-grid">
-        <article class="market-lower-card">
+        <article class="market-lower-card market-lower-card--model">
           <p>Ringkasan model</p>
-          <h4>{{ forecastData.selected_model || 'N/A' }}</h4>
-          <ul>
-            <li><span>Prediksi return</span><strong>{{ ((forecastData.predicted_return || 0) * 100).toFixed(2) }}%</strong></li>
-            <li><span>RMSE</span><strong>{{ Number(selectedMetric?.rmse || 0).toFixed(4) }}</strong></li>
-            <li><span>MAE</span><strong>{{ Number(selectedMetric?.mae || 0).toFixed(4) }}</strong></li>
-            <li><span>Akurasi arah</span><strong>{{ (Number(selectedMetric?.accuracy || 0) * 100).toFixed(1) }}%</strong></li>
+          <div class="market-model-head">
+            <h4>{{ forecastData.selected_model || 'N/A' }}</h4>
+            <div class="market-model-head__chips">
+              <span class="market-model-chip">{{ modelModeLabel }}</span>
+              <span class="market-model-chip">H{{ selectedHorizon }}</span>
+            </div>
+          </div>
+
+          <div class="market-model-grid">
+            <article v-for="item in modelSummaryRows" :key="item.label" class="market-model-grid__item">
+              <span>{{ item.label }}</span>
+              <strong :class="item.tone">{{ item.value }}</strong>
+            </article>
+          </div>
+
+          <div class="market-model-note">
+            <span class="market-model-signal">{{ modelSignalLabel }}</span>
+            <small>{{ forecastData.notes || 'Model runtime aktif untuk inferensi ticker ini.' }}</small>
+          </div>
+        </article>
+
+        <article class="market-lower-card market-lower-card--performance">
+          <div class="market-performance-head">
+            <div>
+              <p>Performance analysis</p>
+              <h4>ROI · RRI · Volatility</h4>
+            </div>
+            <small>{{ performanceMetricDate }}</small>
+          </div>
+          <ul class="market-performance-list">
+            <li v-for="item in performanceMetricRows" :key="item.code">
+              <div class="market-performance-label">
+                <span class="market-performance-code">{{ item.code }}</span>
+                <span>{{ item.label }}</span>
+              </div>
+              <strong :class="item.tone">{{ item.value }}</strong>
+            </li>
           </ul>
+          <div v-if="performanceSparkGeometry.polyline" class="market-performance-spark">
+            <svg viewBox="0 0 300 110" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="marketPerfFill" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="rgba(224,95,121,0.42)" />
+                  <stop offset="100%" stop-color="rgba(224,95,121,0.03)" />
+                </linearGradient>
+              </defs>
+
+              <line
+                v-for="(gridY, idx) in performanceSparkGeometry.gridY"
+                :key="`perf-grid-${idx}`"
+                class="market-performance-grid"
+                x1="6"
+                x2="294"
+                :y1="gridY"
+                :y2="gridY"
+              />
+
+              <path class="market-performance-area" :d="performanceSparkGeometry.areaPath" />
+              <polyline :points="performanceSparkGeometry.polyline" />
+              <circle
+                v-if="performanceSparkGeometry.lastPoint"
+                class="market-performance-point"
+                :cx="performanceSparkGeometry.lastPoint.x"
+                :cy="performanceSparkGeometry.lastPoint.y"
+                r="4.5"
+              />
+            </svg>
+            <div class="market-performance-spark__foot">
+              <span :class="['market-performance-pill', performanceTrendTone]">{{ performanceTrendLabel }}</span>
+              <span>{{ performanceSparkLastLabel }}</span>
+            </div>
+          </div>
         </article>
 
         <article class="market-lower-card">

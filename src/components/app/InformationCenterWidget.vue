@@ -1,11 +1,14 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 
 import { useAuthSession } from '../../composables/useAuthSession'
 import { useInfoCenterSocket } from '../../composables/useInfoCenterSocket'
+import { usePageContext } from '../../composables/usePageContext'
 import '../../styles/components/information-center-widget.css'
 
 const open = ref(false)
+const dataSource = ref('context')
 const question = ref('')
 const ticker = ref('ADRO')
 const horizon = ref(5)
@@ -13,17 +16,66 @@ const sending = ref(false)
 const activeStreamMessageId = ref('')
 const bodyRef = ref(null)
 
+const route = useRoute()
 const { user } = useAuthSession()
 const socket = useInfoCenterSocket()
+const { pageContext } = usePageContext()
 
-const messages = ref([
+const getDefaultMessages = () => [
   {
     id: 'welcome',
     role: 'agent',
     text: 'Halo, saya Information Center. Saya bantu ringkasan forecasting, risiko, dan langkah analisis di aplikasi ini.',
     time: new Date().toISOString(),
   },
-])
+]
+
+const messages = ref(getDefaultMessages())
+
+const historyKey = computed(() => `idx30_ic_history_${route.path}`)
+
+const loadHistory = () => {
+  try {
+    const raw = localStorage.getItem(historyKey.value)
+    if (!raw) return false
+    const parsed = JSON.parse(raw)
+    if (parsed.expiry < Date.now()) {
+      localStorage.removeItem(historyKey.value)
+      return false
+    }
+    messages.value = parsed.messages
+    return true
+  } catch {
+    return false
+  }
+}
+
+const saveHistory = () => {
+  const payload = {
+    expiry: Date.now() + 2 * 60 * 60 * 1000, // 2 hours
+    messages: messages.value
+  }
+  localStorage.setItem(historyKey.value, JSON.stringify(payload))
+}
+
+const resetHistory = () => {
+  localStorage.removeItem(historyKey.value)
+  messages.value = getDefaultMessages()
+  activeStreamMessageId.value = ''
+  sending.value = false
+}
+
+watch(() => route.path, () => {
+  if (!loadHistory()) {
+    messages.value = getDefaultMessages()
+  }
+})
+
+onMounted(() => {
+  if (!loadHistory()) {
+    messages.value = getDefaultMessages()
+  }
+})
 
 const userId = computed(() => String(user.value?.uid || ''))
 const typing = computed(() => sending.value || socket.status.value === 'connecting')
@@ -89,6 +141,7 @@ watch(
       }
       activeStreamMessageId.value = ''
       sending.value = false
+      saveHistory()
       await scrollToBottom()
       return
     }
@@ -102,6 +155,7 @@ watch(
         time: new Date().toISOString(),
       })
       sending.value = false
+      saveHistory()
       await scrollToBottom()
     }
   },
@@ -128,14 +182,27 @@ const onSend = async () => {
   })
   sending.value = true
   activeStreamMessageId.value = ''
+  saveHistory()
   await scrollToBottom()
+
+  const contextPayload = {}
+  if (dataSource.value === 'context' && pageContext.value) {
+    for (const [k, v] of Object.entries(pageContext.value)) {
+      if (Array.isArray(v) && !v.length) continue
+      if (v && typeof v === 'object' && !Object.keys(v).length) continue
+      if (v !== null && v !== undefined && v !== '') contextPayload[k] = v
+    }
+  }
+
+  const payloadTicker = dataSource.value === 'context' ? 'PAGE' : ticker.value
 
   try {
     await socket.ask({
       user_id: userId.value,
       question: text,
-      ticker: ticker.value,
+      ticker: payloadTicker,
       horizon: horizon.value,
+      ...(Object.keys(contextPayload).length > 0 ? { context: contextPayload } : {})
     })
   } catch {
     sending.value = false
@@ -146,6 +213,7 @@ const onSend = async () => {
       text: 'Koneksi belum siap. Klik kirim lagi.',
       time: new Date().toISOString(),
     })
+    saveHistory()
     await scrollToBottom()
   }
 }
@@ -214,24 +282,34 @@ const assistantBlocks = (text) => {
           <h3>Information Center</h3>
         </div>
         <div class="info-center__header-right">
+          <button class="info-center__reset-btn" type="button" @click="resetHistory" title="Reset Chat">Reset</button>
           <small>{{ statusLabel }}</small>
-          <button type="button" @click="open = false">×</button>
+          <button class="info-center__close-btn" type="button" @click="open = false">×</button>
         </div>
       </header>
 
       <div class="info-center__controls">
         <label>
-          <span>Ticker</span>
-          <input v-model="ticker" maxlength="10" />
-        </label>
-        <label>
-          <span>Horizon</span>
-          <select v-model.number="horizon">
-            <option :value="1">1 hari</option>
-            <option :value="5">5 hari</option>
-            <option :value="10">10 hari</option>
+          <span>Sumber</span>
+          <select v-model="dataSource">
+            <option value="context">Konteks Halaman</option>
+            <option value="ticker">Cari Spesifik</option>
           </select>
         </label>
+        <template v-if="dataSource === 'ticker'">
+          <label>
+            <span>Ticker</span>
+            <input v-model="ticker" maxlength="10" />
+          </label>
+          <label>
+            <span>Horizon</span>
+            <select v-model.number="horizon">
+              <option :value="1">1 hari</option>
+              <option :value="5">5 hari</option>
+              <option :value="10">10 hari</option>
+            </select>
+          </label>
+        </template>
       </div>
 
       <div ref="bodyRef" class="info-center__body">

@@ -9,6 +9,7 @@ import AccountPasswordPage from '../pages/app/AccountPasswordPage.vue'
 import ForecastPage from '../pages/app/ForecastPage.vue'
 import MarketPage from '../pages/app/MarketPage.vue'
 import OverviewPage from '../pages/app/OverviewPage.vue'
+import PortfolioPage from '../pages/app/PortfolioPage.vue'
 import ProfilePage from '../pages/app/ProfilePage.vue'
 import TradingPage from '../pages/app/TradingPage.vue'
 import AuthPage from '../pages/auth/AuthPage.vue'
@@ -55,6 +56,10 @@ const router = createRouter({
         {
           path: 'market',
           component: MarketPage,
+        },
+        {
+          path: 'portfolio',
+          component: PortfolioPage,
         },
         {
           path: 'forecast',
